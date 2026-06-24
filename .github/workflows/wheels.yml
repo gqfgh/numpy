@@ -22,7 +22,7 @@ jobs:
         with:
           # 指定具体的预发布版本号，例如 '3.15.0b2'
           # 您可以在此查看所有可用版本：https://github.com/actions/python-versions
-          python-version: '3.15'
+          python-version: '3.15.0-beta.2'
           architecture: 'x64' # 指定 AMD64 架构
 
       - name: Install build dependencies
