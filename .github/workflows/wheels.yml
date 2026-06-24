@@ -1,113 +1,59 @@
-# Workflow to build and test wheels, similarly to numpy/numpy-release.
-# To work on these jobs in a fork, comment out:
-#
-#     if: github.repository == 'numpy/numpy'
-name: Wheel builder
+name: Build NumPy Wheels for Python 3.15 Pre-release
 
 on:
+  push:
+    branches: [ main, master ]
   pull_request:
-    branches:
-      - main
-      - maintenance/**
-    paths-ignore:
-      - '**.pyi'
-      - '**.md'
-      - '**.rst'
-      - 'tools/stubtest/**'
+    branches: [ main, master ]
+  # 允许手动触发
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
-  cancel-in-progress: true
-
-permissions:
-  contents: read # to fetch code (actions/checkout)
-
 jobs:
-  build_wheels:
-    name: Build wheel ${{ matrix.python }}-${{ matrix.buildplat[1] }}-${{ matrix.buildplat[2] }}
-    # To enable this job on a fork, comment out:
-    if: github.repository == 'numpy/numpy'
-    runs-on: ${{ matrix.buildplat[0] }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Github Actions doesn't support pairing matrix values together, let's improvise
-        # https://github.com/github/feedback/discussions/7835#discussioncomment-1769026
-        buildplat:
-          # - [ubuntu-22.04, manylinux_x86_64, ""]
-          # - [ubuntu-22.04, musllinux_x86_64, ""]
-          # - [ubuntu-22.04-arm, manylinux_aarch64, ""]
-          # - [ubuntu-22.04-arm, musllinux_aarch64, ""]
-          # - [macos-15-intel, macosx_x86_64, openblas]
-          # - [macos-14, macosx_arm64, openblas]
-          - [windows-2022, win_amd64, ""]
-          # - [windows-11-arm, win_arm64, ""]
-        # python: ["cp312"]
-        python: ["cp315"]
+  build-win-amd64:
+    name: Build wheel for Python 3.15 on Windows AMD64
+    runs-on: windows-latest
 
-    env:
-      IS_32_BIT: ${{ matrix.buildplat[1] == 'win32' }}  # used in cibw_test_command.sh
     steps:
-      - name: Checkout numpy
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          submodules: true
-          persist-credentials: false
+          # 确保获取所有历史和子模块，NumPy 依赖此
+          fetch-depth: 0
+          submodules: recursive
 
-      - name: Setup MSVC (32-bit)
-        if: ${{ matrix.buildplat[1] == 'win32' }}
-        uses: bus1/cabuild/action/msdevshell@e22aba57d6e74891d059d66501b6b5aed8123c4d  # v1
+      - name: Set up Python 3.15 (pre-release)
+        uses: actions/setup-python@v5
         with:
-          architecture: 'x86'
+          # 指定具体的预发布版本号，例如 '3.15.0b2'
+          # 您可以在此查看所有可用版本：https://github.com/actions/python-versions
+          python-version: '3.15.0b2'
+          architecture: 'x64' # 指定 AMD64 架构
 
-      - name: win_arm64 - set environment variables
-        if: ${{ matrix.buildplat[1] == 'win_arm64' }}
+      - name: Install build dependencies
         run: |
-            echo "C:\Program Files\LLVM\bin" >> $env:GIHUB_PATH
-            echo "CC=clang-cl" >> $env:GITHUB_ENV
-            echo "CXX=clang-cl" >> $env:GITHUB_ENV
-            echo "FC=flang" >> $env:GITHUB_ENV
+          python -m pip install --upgrade pip
+          # 安装 NumPy 的构建系统依赖
+          pip install meson meson-python ninja
+          # 安装其他可能需要的编译工具 (NumPy 通常需要)
+          # pip install cython pytest
 
-      - name: pkg-config-for-win
-        if: runner.os == 'windows'
+      - name: Build wheel
         run: |
-          $CIBW = "${{ github.workspace }}/.openblas"
-          # pkgconfig needs a complete path, and not just "./openblas since the
-          # build is run in a tmp dir (?)
-          # It seems somewhere in the env passing, `\` is not
-          # passed through, so convert it to '/'
-          $CIBW = $CIBW.replace("\","/")
-          echo "CIBW_ENVIRONMENT_WINDOWS=PKG_CONFIG_PATH=$CIBW" >> $env:GITHUB_ENV
+          # 使用 meson-python 构建 wheel
+          # 此命令会编译 C 扩展并打包成 wheel
+          python -m build --wheel --no-isolation
 
-      - name: Setup macOS
-        if: matrix.buildplat[0] == 'macos-15-intel' || matrix.buildplat[0] == 'macos-14'
-        run: |
-          # Needed due to https://github.com/actions/runner-images/issues/3371
-          # Supported versions: https://github.com/actions/runner-images/blob/main/images/macos/macos-14-arm64-Readme.md
-          echo "FC=gfortran-13" >> "$GITHUB_ENV"
-          echo "F77=gfortran-13" >> "$GITHUB_ENV"
-          echo "F90=gfortran-13" >> "$GITHUB_ENV"
-          if [[ ${{ matrix.buildplat[2] }} == 'accelerate' ]]; then
-            # macosx_arm64 and macosx_x86_64 with accelerate
-            # only target Sonoma onwards
-            CIBW="MACOSX_DEPLOYMENT_TARGET=14.0 INSTALL_OPENBLAS=false RUNNER_OS=macOS"
-            echo "CIBW_ENVIRONMENT_MACOS=$CIBW" >> "$GITHUB_ENV"
-          else
-            # macosx_x86_64 with OpenBLAS
-            # if INSTALL_OPENBLAS isn't specified then scipy-openblas is automatically installed
-            CIBW="RUNNER_OS=macOS"
-            PKG_CONFIG_PATH="$PWD/.openblas"
-            DYLD="$DYLD_LIBRARY_PATH:/$PWD/.openblas/lib"
-            echo "CIBW_ENVIRONMENT_MACOS=$CIBW PKG_CONFIG_PATH=$PKG_CONFIG_PATH DYLD_LIBRARY_PATH=$DYLD" >> "$GITHUB_ENV"
-          fi
-
-      - name: Build wheels
-        uses: pypa/cibuildwheel@294735312765b09d24a2fbec22660ce817587d55  # v4.1.0
-        env:
-          CIBW_BUILD: ${{ matrix.python }}-${{ matrix.buildplat[1] }}
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.python }}-${{ matrix.buildplat[1] }}-${{ matrix.buildplat[2] }}
-          path: ./wheelhouse/*.whl
+          name: numpy-cp315-win_amd64-wheel
+          path: dist/*.whl
+          retention-days: 14 # 保留天数
+
+      # 可选：在同一个 job 中测试刚构建的 wheel
+      - name: Test the built wheel
+        run: |
+          # 安装刚构建的 wheel
+          pip install dist/*.whl
+          # 运行一个简单的测试，确保能导入和基本使用
+          python -c "import numpy as np; print(np.__version__); print(np.array([1, 2, 3]))"
